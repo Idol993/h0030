@@ -80,10 +80,12 @@ class BaseConverter(ABC):
 class WechatConverter(BaseConverter):
     platform = "wechat"
 
-    def __init__(self, upload_image_func=None):
+    def __init__(self, upload_image_func=None, fail_on_image_error: bool = True):
         self.upload_image_func = upload_image_func
+        self.fail_on_image_error = fail_on_image_error
         self.title_max_length = 64
         self.summary_max_length = 200
+        self.failed_images = []
 
     def transform_content(self, md_text: str, metadata: ArticleMetadata) -> str:
         md_text = self._remove_frontmatter(md_text)
@@ -105,15 +107,29 @@ class WechatConverter(BaseConverter):
             src = img.get("src", "")
             if self.upload_image_func and src and not src.startswith("data:"):
                 try:
-                    wechat_url = self.upload_image_func(src)
-                    img["data-src"] = wechat_url
+                    wechat_media_id = self.upload_image_func(src)
+                    img["data-src"] = wechat_media_id
                     if "src" in img.attrs:
                         del img["src"]
-                except Exception:
-                    img["data-src"] = src
-                    if "src" in img.attrs:
-                        del img["src"]
+                except Exception as e:
+                    if self.fail_on_image_error:
+                        raise RuntimeError(
+                            f"微信图片上传失败 ({src}): {e}\n"
+                            "请检查 WECHAT_API_KEY 和 WECHAT_API_SECRET 配置是否正确，"
+                            "或使用 --dry-run 模式跳过实际上传。"
+                        )
+                    else:
+                        self.failed_images.append(src)
+                        img["data-src"] = src
+                        if "src" in img.attrs:
+                            del img["src"]
             else:
+                if self.fail_on_image_error and src and not src.startswith("data:"):
+                    raise RuntimeError(
+                        f"微信图片未上传 ({src}): 缺少微信公众号凭证，无法上传到素材库。\n"
+                        "请配置 WECHAT_API_KEY 和 WECHAT_API_SECRET 环境变量，"
+                        "或使用 --dry-run 模式跳过实际上传。"
+                    )
                 img["data-src"] = src
                 if "src" in img.attrs:
                     del img["src"]

@@ -1,3 +1,4 @@
+import os
 import time
 import functools
 from abc import ABC, abstractmethod
@@ -27,6 +28,31 @@ def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0, backoff
             raise last_exception
         return wrapper
     return decorator
+
+
+def get_platform_config_from_env(platform: str) -> Optional[PlatformConfig]:
+    prefix = platform.upper()
+
+    api_key = os.environ.get(f"{prefix}_API_KEY") or os.environ.get(f"{prefix}_APP_ID")
+    api_secret = os.environ.get(f"{prefix}_API_SECRET") or os.environ.get(f"{prefix}_APP_SECRET")
+    access_token = os.environ.get(f"{prefix}_ACCESS_TOKEN")
+    category = os.environ.get(f"{prefix}_CATEGORY")
+
+    if not any([api_key, api_secret, access_token]):
+        return None
+
+    params = {}
+    if category:
+        params["category"] = category
+
+    return PlatformConfig(
+        name=platform,
+        type=platform,
+        api_key=api_key,
+        api_secret=api_secret,
+        access_token=access_token,
+        params=params,
+    )
 
 
 class BasePublisher(ABC):
@@ -59,6 +85,17 @@ class BasePublisher(ABC):
             is_draft=draft,
         )
 
+    def get_dry_run_info(self, content: str, metadata: ArticleMetadata, draft: bool) -> dict:
+        return {
+            "platform": self.platform,
+            "title": metadata.title,
+            "summary": metadata.summary,
+            "tags": metadata.tags,
+            "draft": draft,
+            "content_preview": content[:500] + "..." if len(content) > 500 else content,
+            "content_type": "html" if self.platform == "wechat" else "markdown",
+        }
+
     @abstractmethod
     def _do_publish(self, content: str, metadata: ArticleMetadata, draft: bool = False) -> PublishResult:
         pass
@@ -74,7 +111,10 @@ class WechatPublisher(BasePublisher):
             return self.config.access_token
 
         if not self.config.api_key or not self.config.api_secret:
-            raise ValueError("微信公众号需要配置 app_id 和 app_secret")
+            raise ValueError(
+                "微信公众号凭证缺失：需要配置 WECHAT_API_KEY (APPID) 和 WECHAT_API_SECRET (APPSECRET)，"
+                "或在配置文件中设置，或通过环境变量/--env 文件提供。"
+            )
 
         url = f"{self.BASE_URL}/token"
         params = {
@@ -86,12 +126,51 @@ class WechatPublisher(BasePublisher):
         response.raise_for_status()
         data = response.json()
         if "access_token" not in data:
-            raise ValueError(f"获取 access_token 失败: {data}")
+            raise ValueError(f"获取微信 access_token 失败: {data}")
         return data["access_token"]
 
     @retry_with_backoff(max_retries=3)
-    def _upload_image(self, image_url: str, access_token: str) -> str:
-        raise NotImplementedError("图片上传需调用微信素材库API，此处为占位实现")
+    def _upload_image_from_url(self, image_url: str, access_token: str) -> str:
+        if not access_token:
+            raise ValueError(
+                "微信素材上传失败：缺少有效 access_token。"
+                "请检查 WECHAT_API_KEY 和 WECHAT_API_SECRET 是否正确配置。"
+            )
+
+        try:
+            img_resp = requests.get(image_url, timeout=30)
+            img_resp.raise_for_status()
+        except requests.RequestException as e:
+            raise ValueError(f"下载图片失败 {image_url}: {e}")
+
+        url = f"{self.BASE_URL}/material/add_material"
+        params = {
+            "access_token": access_token,
+            "type": "image",
+        }
+
+        filename = image_url.split("/")[-1] or "image.jpg"
+        if "?" in filename:
+            filename = filename.split("?")[0]
+        if "." not in filename:
+            filename += ".jpg"
+
+        files = {
+            "media": (filename, img_resp.content, img_resp.headers.get("Content-Type", "image/jpeg"))
+        }
+
+        response = requests.post(url, params=params, files=files, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("errcode", 0) != 0:
+            raise ValueError(f"微信图片上传失败: {data}")
+
+        return data.get("media_id", "")
+
+    def upload_image(self, image_url: str) -> str:
+        access_token = self._get_access_token()
+        return self._upload_image_from_url(image_url, access_token)
 
     @retry_with_backoff(max_retries=3)
     def _add_draft(self, content: str, metadata: ArticleMetadata, access_token: str) -> str:
@@ -113,7 +192,7 @@ class WechatPublisher(BasePublisher):
         response.raise_for_status()
         data = response.json()
         if data.get("errcode", 0) != 0:
-            raise ValueError(f"创建草稿失败: {data}")
+            raise ValueError(f"创建微信草稿失败: {data}")
         return data.get("media_id", "")
 
     @retry_with_backoff(max_retries=3)
@@ -136,7 +215,7 @@ class WechatPublisher(BasePublisher):
         response.raise_for_status()
         result = response.json()
         if result.get("errcode", 0) != 0:
-            raise ValueError(f"发布失败: {result}")
+            raise ValueError(f"微信发布失败: {result}")
         return result.get("msg_id", "")
 
     def _do_publish(self, content: str, metadata: ArticleMetadata, draft: bool = False) -> PublishResult:
@@ -148,7 +227,7 @@ class WechatPublisher(BasePublisher):
             return PublishResult(
                 success=True,
                 platform=self.platform,
-                url=f"https://mp.weixin.qq.com/",
+                url=f"https://mp.weixin.qq.com/ (草稿 media_id: {media_id})",
                 is_draft=True,
             )
 
@@ -167,10 +246,16 @@ class ZhihuPublisher(BasePublisher):
 
     BASE_URL = "https://api.zhihu.com"
 
+    def _validate_config(self) -> None:
+        if not self.config.access_token:
+            raise ValueError(
+                "知乎凭证缺失：需要配置 ZHIHU_ACCESS_TOKEN，"
+                "或在配置文件中设置，或通过环境变量/--env 文件提供。"
+            )
+
     @retry_with_backoff(max_retries=3)
     def _do_publish(self, content: str, metadata: ArticleMetadata, draft: bool = False) -> PublishResult:
-        if not self.config.access_token:
-            raise ValueError("知乎需要配置 access_token")
+        self._validate_config()
 
         url = f"{self.BASE_URL}/articles"
         headers = {
@@ -219,10 +304,16 @@ class JuejinPublisher(BasePublisher):
         }
         return category_map.get(category_name, 6809635626879549454)
 
+    def _validate_config(self) -> None:
+        if not self.config.access_token:
+            raise ValueError(
+                "掘金凭证缺失：需要配置 JUEJIN_ACCESS_TOKEN，"
+                "或在配置文件中设置，或通过环境变量/--env 文件提供。"
+            )
+
     @retry_with_backoff(max_retries=3)
     def _do_publish(self, content: str, metadata: ArticleMetadata, draft: bool = False) -> PublishResult:
-        if not self.config.access_token:
-            raise ValueError("掘金需要配置 access_token")
+        self._validate_config()
 
         url = f"{self.BASE_URL}/content_api/v1/article/publish"
         if draft:
