@@ -1,0 +1,62 @@
+{
+  "generated_at": "2026-06-19T13:13:06.278233",
+  "article": "test_diff",
+  "mode": "publish",
+  "source": "test_diff.md",
+  "platforms": [
+    {
+      "platform": "zhihu",
+      "title": "这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何",
+      "summary": "测试文章，用来验证各种差异检测功能",
+      "tags": [
+        "测试"
+      ],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "\n# 这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何\n\n这是一篇测试文章，包含图片，标签不足等情况。\n\n![测试图片1](https://example.com/test1.jpg)\n\n![测试图片2](https://example.com/test2.jpg)\n\n更多内容...\n",
+      "source": "test_diff.md",
+      "dist_file": "test_diff.zhihu.md",
+      "diffs": [],
+      "will_publish": true,
+      "error": null
+    },
+    {
+      "platform": "juejin",
+      "title": "这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何",
+      "summary": "测试文章，用来验证各种差异检测功能",
+      "tags": [
+        "测试",
+        "前端",
+        "后端"
+      ],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "\n# 这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何\n\n这是一篇测试文章，包含图片，标签不足等情况。\n\n![测试图片1](https://example.com/test1.jpg)\n\n![测试图片2](https://example.com/test2.jpg)\n\n更多内容...\n\n\n---\n\n> 🌟 欢迎关注我的账号，第一时间获取更多技术干货！\n> \n> 👍 如果觉得文章对你有帮助，别忘了点赞收藏支持一下～\n> \n> 💬 有任何问题欢迎在评论区交流\n\n",
+      "source": "test_diff.md",
+      "dist_file": "test_diff.juejin.md",
+      "diffs": [
+        "自动补足标签: 前端, 后端"
+      ],
+      "will_publish": true,
+      "error": null
+    },
+    {
+      "platform": "wechat",
+      "title": "这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何",
+      "summary": "测试文章，用来验证各种差异检测功能",
+      "tags": [
+        "测试"
+      ],
+      "draft": false,
+      "content_type": "html",
+      "content_preview": "<h1 style=\"font-size: 24px; font-weight: bold; margin: 20px 0 10px;\">这是一个非常长的标题，超过了微信平台64字的限制，会被自动截断处理，我们来看看效果如何</h1>\n<p style=\"margin-bottom: 1em; line-height: 1.8;\">这是一篇测试文章，包含图片，标签不足等情况。</p>\n<p style=\"margin-bottom: 1em; line-height: 1.8;\"><img alt=\"测试图片1\" data-src=\"https://example.com/test1.jpg\"/></p>\n<p style=\"margin-bottom: 1em; line-height: 1.8;\"><img alt=\"测试图片2\" data-src=\"https://example.com/test2.jpg\"/></p>\n<p style=\"margin-bottom: 1em; line-height: 1.8;\">更多内容...</p>",
+      "source": "test_diff.md",
+      "dist_file": "test_diff.wechat.html",
+      "diffs": [
+        "还有 2 张外链图片未上传素材库"
+      ],
+      "will_publish": true,
+      "error": null
+    }
+  ]
+}

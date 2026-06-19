@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-06-19T13:15:11.359344",
+  "article": "example",
+  "mode": "publish",
+  "source": "./dist",
+  "platforms": [
+    {
+      "platform": "zhihu",
+      "title": "Python 异步编程完全指南",
+      "summary": "深入理解 Python 异步编程原理与实践",
+      "tags": [
+        "Python",
+        "异步编程",
+        "后端开发"
+      ],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "\n# Python 异步编程完全指南\n\n在现代 Web 开发中，异步编程已经成为提升性能的重要手段。本文将深入探讨 Python 中的异步编程。\n\n## 什么是异步编程\n\n异步编程是一种**并发编程**的方式，它允许程序在等待某些操作（如 I/O）完成时继续执行其他任务。\n\n> 异步编程的核心思想是：**不阻塞等待**，而是在等待期间去做其他事情。\n\n## 为什么需要异步\n\n1. 提高 I/O 密集型任务的性能\n2. 更好的资源利用率\n3. 更简洁的并发代码\n\n## 代码示例\n\n下面是一个简单的异步函数示例：\n\n```python\nimport asyncio\n\nasync def hello():\n    print(\"Hello\")\n    await asyncio.sleep(1)\n    print(\"World\")\n\nasyncio.run(hello())\n```\n\n## 常见误区\n\n异步一定比同步快 这个说法并不准确。对于 CPU 密集型任务，异步并不会带来性能提升。\n\n## 总结\n\n异步编程是 Python 开发者必备的技能之一。掌握它可以帮助你写出更高效的程序。\n\n...",
+      "source": "dist\\example.zhihu.md",
+      "dist_file": "example.zhihu.md",
+      "diffs": [],
+      "will_publish": true,
+      "error": null
+    },
+    {
+      "platform": "juejin",
+      "title": "Python 异步编程完全指南",
+      "summary": "深入理解 Python 异步编程原理与实践",
+      "tags": [
+        "Python",
+        "异步编程",
+        "后端开发"
+      ],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "\n# Python 异步编程完全指南\n\n在现代 Web 开发中，异步编程已经成为提升性能的重要手段。本文将深入探讨 Python 中的异步编程。\n\n## 什么是异步编程\n\n异步编程是一种**并发编程**的方式，它允许程序在等待某些操作（如 I/O）完成时继续执行其他任务。\n\n> 异步编程的核心思想是：**不阻塞等待**，而是在等待期间去做其他事情。\n\n## 为什么需要异步\n\n1. 提高 I/O 密集型任务的性能\n2. 更好的资源利用率\n3. 更简洁的并发代码\n\n## 代码示例\n\n下面是一个简单的异步函数示例：\n\n```python\nimport asyncio\n\nasync def hello():\n    print(\"Hello\")\n    await asyncio.sleep(1)\n    print(\"World\")\n\nasyncio.run(hello())\n```\n\n## 常见误区\n\n~~异步一定比同步快~~ 这个说法并不准确。对于 CPU 密集型任务，异步并不会带来性能提升。\n\n## 总结\n\n异步编程是 Python 开发者必备的技能之一。掌握它可以帮助你写出更高效的程...",
+      "source": "dist\\example.juejin.md",
+      "dist_file": "example.juejin.md",
+      "diffs": [],
+      "will_publish": true,
+      "error": null
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 # 发布预览报告 - example
 
-- **生成时间**: 2026-06-19 13:12:35
+- **生成时间**: 2026-06-19 13:15:11
 - **模式**: 正式发布
-- **原文文件**: `example.md`
+- **dist 目录**: `./dist`
 
 ---
 
@@ -13,7 +13,7 @@
 - **标签**: Python, 异步编程, 后端开发
 - **状态**: 正式发布
 - **格式**: MARKDOWN
-- **来源**: `example.md`
+- **来源**: `dist\example.zhihu.md`
 
 ### 正文预览
 
@@ -68,7 +68,7 @@ asyncio.run(hello())
 - **标签**: Python, 异步编程, 后端开发
 - **状态**: 正式发布
 - **格式**: MARKDOWN
-- **来源**: `example.md`
+- **来源**: `dist\example.juejin.md`
 
 ### 正文预览
 
@@ -111,26 +111,5 @@ asyncio.run(hello())
 ## 总结
 
 异步编程是 Python 开发者必备的技能之一。掌握它可以帮助你写出更高效的程...
-
----
-
-## WECHAT
-
-- **标题**: Python 异步编程完全指南
-- **摘要**: 深入理解 Python 异步编程原理与实践
-- **标签**: Python, 异步编程, 后端开发
-- **状态**: 正式发布
-- **格式**: HTML
-- **来源**: `example.md`
-
-### 正文预览
-
-```html
-<h1 style="font-size: 24px; font-weight: bold; margin: 20px 0 10px;">Python 异步编程完全指南</h1>
-<p style="margin-bottom: 1em; line-height: 1.8;">在现代 Web 开发中，异步编程已经成为提升性能的重要手段。本文将深入探讨 Python 中的异步编程。</p>
-<h2 style="font-size: 20px; font-weight: bold; margin: 18px 0 8px; border-bottom: 2px solid #eee; padding-bottom: 6px;">什么是异步编程</h2>
-<p style="margin-bottom: 1em; line-height: 1.8;">异步编程是一种<strong>并发编程</strong>的方式，它允许程序在等待某些操作（如 I/O）完成时继续执行其他任务。</p>
-<blockquote style="border-left: 4px solid #ddd; paddin
-```
 
 ---

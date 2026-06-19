@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime
@@ -93,7 +94,7 @@ def _print_dry_run_preview(info: dict) -> None:
     console.print()
 
 
-def _build_report_section(info: dict, dist_file: str) -> str:
+def _build_report_section(info: dict, source: str) -> str:
     lines = []
     lines.append(f"## {info['platform'].upper()}")
     lines.append("")
@@ -102,7 +103,10 @@ def _build_report_section(info: dict, dist_file: str) -> str:
     lines.append(f"- **标签**: {', '.join(info['tags']) if info['tags'] else '(无)'}")
     lines.append(f"- **状态**: {'草稿' if info['draft'] else '正式发布'}")
     lines.append(f"- **格式**: {info['content_type'].upper()}")
-    lines.append(f"- **dist 文件**: `{dist_file}`")
+    lines.append(f"- **来源**: `{source}`")
+    if info.get("diffs"):
+        diffs = "; ".join(info["diffs"])
+        lines.append(f"- **差异**: {diffs}")
     lines.append("")
     lines.append("### 正文预览")
     lines.append("")
@@ -182,6 +186,12 @@ def _do_publish(
 
     results = []
     report_sections = []
+    report_infos = []
+    original_metadata = ArticleMetadata()
+
+    if md_text:
+        base_converter = get_converter("zhihu")
+        _, original_metadata = base_converter.convert(md_text, ArticleMetadata())
 
     for platform in target_platforms:
         config = _resolve_platform_config(platform, configs)
@@ -193,18 +203,39 @@ def _do_publish(
             )
             console.print(f"[red]✗[/red] [{platform}] 配置缺失")
             console.print(f"    {error_msg}")
-            results.append({
+            result = {
                 "success": False,
                 "platform": platform,
                 "error": error_msg,
-            })
+            }
+            results.append(result)
+            if dry_run and report:
+                info = {
+                    "platform": platform,
+                    "title": "",
+                    "summary": "",
+                    "tags": [],
+                    "draft": draft,
+                    "content_preview": "",
+                    "content_type": "html" if platform == "wechat" else "markdown",
+                    "source": "N/A (配置缺失)",
+                    "dist_file": "",
+                    "diffs": [],
+                    "will_publish": False,
+                    "error": error_msg,
+                }
+                report_infos.append(info)
+                report_sections.append(_build_report_section(info, info["source"]))
             continue
 
         content = None
         metadata = ArticleMetadata()
         dist_file_path = ""
+        source = ""
+        diffs = []
 
         if md_text:
+            source = str(file)
             try:
                 metadata = ArticleMetadata()
                 converter_kwargs = {}
@@ -222,30 +253,89 @@ def _do_publish(
 
                 ext = ".html" if platform == "wechat" else ".md"
                 dist_file_path = f"{file_stem}.{platform}{ext}"
+
+                if original_metadata.title and meta.title != original_metadata.title:
+                    diffs.append(f"标题被截断 ({len(original_metadata.title)} → {len(meta.title)} 字)")
+                if platform == "juejin" and original_metadata.tags:
+                    added_tags = [t for t in meta.tags if t not in original_metadata.tags]
+                    if added_tags:
+                        diffs.append(f"自动补足标签: {', '.join(added_tags)}")
+                if platform == "wechat":
+                    external_imgs = find_external_images_in_html(content)
+                    if external_imgs:
+                        diffs.append(f"还有 {len(external_imgs)} 张外链图片未上传素材库")
+
             except Exception as e:
                 console.print(f"[red]✗[/red] [{platform}] 转换失败: {e}")
-                results.append({
+                result = {
                     "success": False,
                     "platform": platform,
                     "error": str(e),
-                })
+                }
+                results.append(result)
+                if dry_run and report:
+                    info = {
+                        "platform": platform,
+                        "title": "",
+                        "summary": "",
+                        "tags": [],
+                        "draft": draft,
+                        "content_preview": "",
+                        "content_type": "html" if platform == "wechat" else "markdown",
+                        "source": source,
+                        "dist_file": dist_file_path,
+                        "diffs": diffs,
+                        "will_publish": False,
+                        "error": str(e),
+                    }
+                    report_infos.append(info)
                 continue
         else:
+            ext = ".html" if platform == "wechat" else ".md"
+            source = str(Path(dist_dir) / f"{file_stem}.{platform}{ext}")
             dist_result = _read_dist_file(Path(dist_dir), file_stem, platform)
             if dist_result is None:
                 ext = ".html" if platform == "wechat" else ".md"
                 expected_file = f"{file_stem}.{platform}{ext}"
                 error_msg = f"dist 目录中缺少该平台文件: {expected_file}"
                 console.print(f"[yellow]⚠[/yellow] [{platform}] {error_msg}，跳过")
-                results.append({
+                result = {
                     "success": False,
                     "platform": platform,
                     "error": error_msg,
-                })
+                }
+                results.append(result)
+                if dry_run and report:
+                    info = {
+                        "platform": platform,
+                        "title": "",
+                        "summary": "",
+                        "tags": [],
+                        "draft": draft,
+                        "content_preview": "",
+                        "content_type": "html" if platform == "wechat" else "markdown",
+                        "source": source,
+                        "dist_file": expected_file,
+                        "diffs": diffs,
+                        "will_publish": False,
+                        "error": error_msg,
+                    }
+                    report_infos.append(info)
+                    report_sections.append(_build_report_section(info, source))
                 continue
             content, metadata = dist_result
             ext = ".html" if platform == "wechat" else ".md"
             dist_file_path = f"{file_stem}.{platform}{ext}"
+
+            if platform == "juejin" and len(metadata.tags) >= 3:
+                default_tags = ["前端", "后端", "程序员"]
+                added_tags = [t for t in default_tags if t in metadata.tags and t not in original_metadata.tags]
+                if added_tags and original_metadata.tags:
+                    diffs.append(f"包含自动补足的标签: {', '.join(added_tags)}")
+            if platform == "wechat":
+                external_imgs = find_external_images_in_html(content)
+                if external_imgs:
+                    diffs.append(f"还有 {len(external_imgs)} 张外链图片未上传素材库")
 
             if platform == "wechat" and not dry_run:
                 external_imgs = find_external_images_in_html(content)
@@ -265,11 +355,12 @@ def _do_publish(
                         dist_content_file.write_text(content, encoding="utf-8")
                     except RuntimeError as e:
                         console.print(f"[red]✗[/red] [{platform}] 图片上传失败: {e}")
-                        results.append({
+                        result = {
                             "success": False,
                             "platform": platform,
                             "error": str(e),
-                        })
+                        }
+                        results.append(result)
                         continue
                     except Exception as e:
                         error_msg = (
@@ -278,33 +369,40 @@ def _do_publish(
                             "或使用 --dry-run 跳过图片上传。"
                         )
                         console.print(f"[red]✗[/red] [{platform}] {error_msg}")
-                        results.append({
+                        result = {
                             "success": False,
                             "platform": platform,
                             "error": error_msg,
-                        })
+                        }
+                        results.append(result)
                         continue
 
         if dry_run:
             publisher = get_publisher(platform, config, dry_run=True)
             info = publisher.get_dry_run_info(content, metadata, draft)
             info["dist_file"] = dist_file_path
+            info["source"] = source
+            info["diffs"] = diffs
+            info["will_publish"] = True
+            info["error"] = None
             _print_dry_run_preview(info)
             result = publisher.publish(content, metadata, draft=draft)
 
             if report:
-                report_sections.append(_build_report_section(info, dist_file_path))
+                report_infos.append(info)
+                report_sections.append(_build_report_section(info, source))
         else:
             try:
                 publisher = get_publisher(platform, config, dry_run=False)
                 result = publisher.publish(content, metadata, draft=draft)
             except Exception as e:
                 console.print(f"[red]✗[/red] [{platform}] 异常: {e}")
-                results.append({
+                result = {
                     "success": False,
                     "platform": platform,
                     "error": str(e),
-                })
+                }
+                results.append(result)
                 continue
 
         if result.success:
@@ -322,26 +420,89 @@ def _do_publish(
     console.print(f"[bold]发布结果:[/bold] 成功 [green]{success_count}[/green] 个，失败 [red]{fail_count}[/red] 个")
 
     if report and report_sections:
-        _write_report(report, file_stem, report_sections, draft, dist_dir)
+        _write_report(report, file_stem, report_sections, draft, dist_dir, report_infos, source if md_text else None)
         console.print(f"\n[bold green]报告已保存: {report}[/bold green]")
+        json_path = Path(report).with_suffix(".json")
+        console.print(f"[bold green]JSON 报告已保存: {json_path}[/bold green]")
 
     if fail_count > 0 and success_count == 0:
         sys.exit(1)
 
 
-def _write_report(report_path: str, file_stem: str, sections: List[str], draft: bool, dist_dir: str) -> None:
+def _write_report(
+    report_path: str,
+    file_stem: str,
+    sections: List[str],
+    draft: bool,
+    dist_dir: str,
+    infos: List[dict],
+    source_file: Optional[str] = None,
+) -> None:
     lines = []
     lines.append(f"# 发布预览报告 - {file_stem}")
     lines.append("")
     lines.append(f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"- **模式**: {'草稿' if draft else '正式发布'}")
-    lines.append(f"- **dist 目录**: `{dist_dir}`")
+    if source_file:
+        lines.append(f"- **原文文件**: `{source_file}`")
+    else:
+        lines.append(f"- **dist 目录**: `{dist_dir}`")
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    has_diffs = any(info.get("diffs") for info in infos)
+    if has_diffs:
+        lines.append("## 平台差异汇总")
+        lines.append("")
+        lines.append("| 平台 | 标题 | 标签数 | 状态 | 差异说明 |")
+        lines.append("|------|------|--------|------|----------|")
+        for info in infos:
+            title = info.get("title", "") or "(无)"
+            tag_count = len(info.get("tags", []))
+            status = []
+            if info.get("error"):
+                status.append("❌ 失败")
+            elif info.get("will_publish"):
+                status.append("✅ 可发布")
+            else:
+                status.append("⚠️ 跳过")
+            if info.get("draft"):
+                status.append("草稿")
+            diffs = "; ".join(info.get("diffs", [])) if info.get("diffs") else "-"
+            lines.append(f"| {info['platform'].upper()} | {title} | {tag_count} | {' '.join(status)} | {diffs} |")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     lines.extend(sections)
 
     Path(report_path).write_text("\n".join(lines), encoding="utf-8")
+
+    json_path = Path(report_path).with_suffix(".json")
+    json_data = {
+        "generated_at": datetime.now().isoformat(),
+        "article": file_stem,
+        "mode": "draft" if draft else "publish",
+        "source": source_file if source_file else dist_dir,
+        "platforms": [],
+    }
+    for info in infos:
+        json_data["platforms"].append({
+            "platform": info["platform"],
+            "title": info.get("title", ""),
+            "summary": info.get("summary", ""),
+            "tags": info.get("tags", []),
+            "draft": info.get("draft", False),
+            "content_type": info.get("content_type", ""),
+            "content_preview": info.get("content_preview", ""),
+            "source": info.get("source", ""),
+            "dist_file": info.get("dist_file", ""),
+            "diffs": info.get("diffs", []),
+            "will_publish": info.get("will_publish", False),
+            "error": info.get("error"),
+        })
+    json_path.write_text(json.dumps(json_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _do_doctor(env_file: Optional[str], dist_dir: str, file: Optional[str]) -> None:
@@ -352,7 +513,12 @@ def _do_doctor(env_file: Optional[str], dist_dir: str, file: Optional[str]) -> N
 
     configs = load_config()
 
-    console.print(Panel("[bold]Publish Doctor - 发布前检查[/bold]", border_style="green"))
+    if file:
+        check_mode = "原文模式"
+    else:
+        check_mode = "dist 目录模式"
+
+    console.print(Panel(f"[bold]Publish Doctor - 发布前检查 ({check_mode})[/bold]", border_style="green"))
 
     console.print("\n[bold cyan]1. 环境变量文件[/bold cyan]")
     env_path = Path(env_file) if env_file else Path.cwd() / ".env"
@@ -385,124 +551,219 @@ def _do_doctor(env_file: Optional[str], dist_dir: str, file: Optional[str]) -> N
 
     console.print(platform_table)
 
-    console.print("\n[bold cyan]3. dist 目录文件[/bold cyan]")
-    dist_path = Path(dist_dir)
-    file_stem = None
-    if not dist_path.exists():
-        console.print(f"  [red]✗[/red] dist 目录不存在: {dist_dir}")
-        console.print("    建议: 先执行 'publish convert article.md --all'")
-    else:
-        json_files = list(dist_path.glob("*.json"))
-        if json_files:
-            file_stem = json_files[0].stem.split(".")[0]
-        else:
-            md_files = list(dist_path.glob("*.md"))
-            file_stem = md_files[0].stem if md_files else None
+    original_meta = None
+    if file:
+        console.print("\n[bold cyan]3. 原文元信息解析[/bold cyan]")
+        md_text = _read_markdown(file)
+        base_converter = get_converter("zhihu")
+        _, original_meta = base_converter.convert(md_text, ArticleMetadata())
 
-        if file_stem:
-            console.print(f"  文章标识: [bold]{file_stem}[/bold]")
-            dist_table = Table(show_header=True)
-            dist_table.add_column("平台", style="cyan")
-            dist_table.add_column("文件", style="green")
-            dist_table.add_column("状态", style="magenta")
+        console.print(f"  原文文件: [bold]{file}[/bold]")
+        console.print(f"  文章标题: {original_meta.title or '(无)'}")
+        if original_meta.tags:
+            console.print(f"  原文标签: {', '.join(original_meta.tags)}")
+        if original_meta.summary:
+            s = original_meta.summary[:60] + "..." if len(original_meta.summary) > 60 else original_meta.summary
+            console.print(f"  原文摘要: {s}")
 
-            for p in get_supported_platforms():
-                ext = ".html" if p == "wechat" else ".md"
-                content_file = dist_path / f"{file_stem}.{p}{ext}"
-                meta_file = dist_path / f"{file_stem}.{p}.json"
+        console.print("\n[bold cyan]4. dist 文件生成状态[/bold cyan]")
+        file_stem = Path(file).stem
+        dist_path = Path(dist_dir)
 
-                if content_file.exists():
-                    size = content_file.stat().st_size
-                    status = f"✓ ({size} bytes)"
-                    if not meta_file.exists():
-                        status += " (元信息缺失)"
-                else:
-                    status = "✗ 缺失"
-                dist_table.add_row(p, content_file.name, status)
+        dist_state_table = Table(show_header=True)
+        dist_state_table.add_column("平台", style="cyan")
+        dist_state_table.add_column("期望文件", style="green")
+        dist_state_table.add_column("状态", style="magenta")
+        dist_state_table.add_column("下一步", style="white")
 
-            console.print(dist_table)
+        for p in get_supported_platforms():
+            ext = ".html" if p == "wechat" else ".md"
+            expected_file = f"{file_stem}.{p}{ext}"
+            content_file = dist_path / expected_file
+            meta_file = dist_path / f"{file_stem}.{p}.json"
 
-            console.print("\n[bold cyan]4. 文章元信息[/bold cyan]")
-            for p in get_supported_platforms():
-                meta_file = dist_path / f"{file_stem}.{p}.json"
-                if meta_file.exists():
-                    try:
-                        meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
-                        meta = ArticleMetadata(**meta_data)
-                        console.print(f"  [{p}] 标题: {meta.title or '(无)'}")
-                        if meta.tags:
-                            console.print(f"         标签: {', '.join(meta.tags)}")
-                        if meta.summary:
-                            s = meta.summary[:60] + "..." if len(meta.summary) > 60 else meta.summary
-                            console.print(f"         摘要: {s}")
-                        if p == "juejin" and len(meta.tags) < 3:
-                            console.print(f"         [yellow]⚠ 标签不足3个，发布时会自动补充[/yellow]")
-                    except Exception as e:
-                        console.print(f"  [{p}] [red]元信息解析失败: {e}[/red]")
-        else:
-            console.print(f"  [yellow]⚠[/yellow] dist 目录为空，没有找到已转换的文件")
-            console.print("    建议: 先执行 'publish convert article.md --all'")
-
-    console.print("\n[bold cyan]5. 微信图片素材状态[/bold cyan]")
-    wechat_cfg = _resolve_platform_config("wechat", configs)
-    wechat_html = None
-    if file_stem and dist_path.exists():
-        wechat_file = dist_path / f"{file_stem}.wechat.html"
-        if wechat_file.exists():
-            wechat_html = wechat_file.read_text(encoding="utf-8")
-
-    if wechat_html:
-        external_imgs = find_external_images_in_html(wechat_html)
-        if not external_imgs:
-            console.print("  [green]✓[/green] 无外链图片，所有图片已上传素材库")
-        else:
-            console.print(f"  [yellow]⚠[/yellow] 发现 {len(external_imgs)} 张外链图片尚未上传到素材库:")
-            for url in external_imgs:
-                short_url = url[:60] + "..." if len(url) > 60 else url
-                console.print(f"    - {short_url}")
-
-            if wechat_cfg and ((wechat_cfg.api_key and wechat_cfg.api_secret) or wechat_cfg.access_token):
-                console.print("  [green]✓[/green] 微信凭证已配置，发布时会自动上传这些图片")
+            if content_file.exists():
+                size = content_file.stat().st_size
+                status = f"✓ 已生成 ({size} bytes)"
+                if not meta_file.exists():
+                    status += " (元信息缺失)"
+                next_step = "-"
             else:
-                console.print("  [red]✗[/red] 微信凭证缺失，图片上传将失败")
-                console.print("    建议: 设置 WECHAT_API_KEY 和 WECHAT_API_SECRET 环境变量")
-    else:
-        if wechat_cfg:
-            console.print("  [yellow]⚠[/yellow] 未找到微信 HTML 文件，无法检查图片状态")
-        else:
-            console.print("  - (无需检查，微信未配置或无 HTML 文件)")
+                status = "✗ 未生成"
+                next_step = f"publish convert {file} --target {p}"
+            dist_state_table.add_row(p, expected_file, status, next_step)
 
-    console.print("\n[bold cyan]6. 发布就绪总结[/bold cyan]")
-    for p in get_supported_platforms():
-        cfg = _resolve_platform_config(p, configs)
-        ext = ".html" if p == "wechat" else ".md"
-        dist_file_exists = False
-        if file_stem:
+        console.print(dist_state_table)
+
+        console.print("\n[bold cyan]5. 平台转换差异预测[/bold cyan]")
+        diff_table = Table(show_header=True)
+        diff_table.add_column("平台", style="cyan")
+        diff_table.add_column("差异项", style="yellow")
+        diff_table.add_column("说明", style="white")
+
+        for p in get_supported_platforms():
+            diffs = []
+            if p == "wechat" and original_meta.title and len(original_meta.title) > 64:
+                diffs.append(f"标题将被截断 ({len(original_meta.title)} → 64 字)")
+            if p == "juejin" and len(original_meta.tags) < 3:
+                need = 3 - len(original_meta.tags)
+                diffs.append(f"将自动补足 {need} 个标签")
+            if p == "wechat":
+                imgs = re.findall(r'!\[.*?\]\((https?://.*?)\)', md_text)
+                if imgs:
+                    diffs.append(f"有 {len(imgs)} 张图片需上传素材库")
+
+            if diffs:
+                for d in diffs:
+                    diff_table.add_row(p, d, "")
+            else:
+                diff_table.add_row(p, "无", "与原文一致")
+
+        console.print(diff_table)
+
+        console.print("\n[bold cyan]6. 发布就绪总结[/bold cyan]")
+        for p in get_supported_platforms():
+            cfg = _resolve_platform_config(p, configs)
+            ext = ".html" if p == "wechat" else ".md"
             dist_file_exists = (dist_path / f"{file_stem}.{p}{ext}").exists()
 
-        issues = []
-        if not cfg:
-            issues.append("凭证缺失")
-        elif p == "wechat" and not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
-            issues.append("凭证不完整")
-        if not dist_file_exists:
-            issues.append("dist 文件缺失")
+            issues = []
+            if not cfg:
+                issues.append("凭证缺失")
+            elif p == "wechat" and not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
+                issues.append("凭证不完整")
+            if not dist_file_exists:
+                issues.append("dist 文件未生成")
 
-        if p == "wechat" and wechat_html and find_external_images_in_html(wechat_html):
-            if not cfg or not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
-                issues.append("外链图片无法上传")
-
-        if not issues:
-            console.print(f"  [green]✓ {p}[/green]: 可发布")
-        elif "凭证缺失" in issues or "凭证不完整" in issues:
-            console.print(f"  [red]✗ {p}[/red]: 将失败 - {'; '.join(issues)}")
-            console.print(f"    → 设置 {p.upper()}_ACCESS_TOKEN 环境变量或执行 publish platforms add")
-        elif "dist 文件缺失" in issues:
-            console.print(f"  [yellow]⚠ {p}[/yellow]: 将跳过 - {'; '.join(issues)}")
-            console.print(f"    → 先执行 publish convert --target {p}")
+            if not issues:
+                console.print(f"  [green]✓ {p}[/green]: 可发布")
+            elif "凭证缺失" in issues or "凭证不完整" in issues:
+                console.print(f"  [red]✗ {p}[/red]: 将失败 - {'; '.join(issues)}")
+                console.print(f"    → 设置 {p.upper()}_ACCESS_TOKEN 环境变量或执行 publish platforms add")
+            elif "dist 文件未生成" in issues:
+                console.print(f"  [yellow]⚠ {p}[/yellow]: 将跳过 - {'; '.join(issues)}")
+                console.print(f"    → 先执行 publish convert {file} --target {p}")
+            else:
+                console.print(f"  [yellow]⚠ {p}[/yellow]: {'; '.join(issues)}")
+                console.print(f"    → 检查微信凭证后重试，或使用 --dry-run 预览")
+    else:
+        console.print("\n[bold cyan]3. dist 目录文件[/bold cyan]")
+        dist_path = Path(dist_dir)
+        file_stem = None
+        if not dist_path.exists():
+            console.print(f"  [red]✗[/red] dist 目录不存在: {dist_dir}")
+            console.print("    建议: 先执行 'publish convert article.md --all'")
         else:
-            console.print(f"  [yellow]⚠ {p}[/yellow]: {'; '.join(issues)}")
-            console.print(f"    → 检查微信凭证后重试，或使用 --dry-run 预览")
+            json_files = list(dist_path.glob("*.json"))
+            if json_files:
+                file_stem = json_files[0].stem.split(".")[0]
+            else:
+                md_files = list(dist_path.glob("*.md"))
+                file_stem = md_files[0].stem if md_files else None
+
+            if file_stem:
+                dist_table = Table(show_header=True)
+                dist_table.add_column("平台", style="cyan")
+                dist_table.add_column("文件", style="green")
+                dist_table.add_column("状态", style="magenta")
+
+                for p in get_supported_platforms():
+                    ext = ".html" if p == "wechat" else ".md"
+                    content_file = dist_path / f"{file_stem}.{p}{ext}"
+                    meta_file = dist_path / f"{file_stem}.{p}.json"
+
+                    if content_file.exists():
+                        size = content_file.stat().st_size
+                        status = f"✓ ({size} bytes)"
+                        if not meta_file.exists():
+                            status += " (元信息缺失)"
+                    else:
+                        status = "✗ 缺失"
+                    dist_table.add_row(p, content_file.name, status)
+
+                console.print(dist_table)
+
+                console.print("\n[bold cyan]4. 文章元信息[/bold cyan]")
+                for p in get_supported_platforms():
+                    meta_file = dist_path / f"{file_stem}.{p}.json"
+                    if meta_file.exists():
+                        try:
+                            meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                            meta = ArticleMetadata(**meta_data)
+                            console.print(f"  [{p}] 标题: {meta.title or '(无)'}")
+                            if meta.tags:
+                                console.print(f"         标签: {', '.join(meta.tags)}")
+                            if meta.summary:
+                                s = meta.summary[:60] + "..." if len(meta.summary) > 60 else meta.summary
+                                console.print(f"         摘要: {s}")
+                            if p == "juejin" and len(meta.tags) < 3:
+                                console.print(f"         [yellow]⚠ 标签不足3个，发布时会自动补充[/yellow]")
+                        except Exception as e:
+                            console.print(f"  [{p}] [red]元信息解析失败: {e}[/red]")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] dist 目录为空，没有找到已转换的文件")
+                console.print("    建议: 先执行 'publish convert article.md --all'")
+
+        console.print("\n[bold cyan]5. 微信图片素材状态[/bold cyan]")
+        wechat_cfg = _resolve_platform_config("wechat", configs)
+        wechat_html = None
+        if file_stem and dist_path.exists():
+            wechat_file = dist_path / f"{file_stem}.wechat.html"
+            if wechat_file.exists():
+                wechat_html = wechat_file.read_text(encoding="utf-8")
+
+        if wechat_html:
+            external_imgs = find_external_images_in_html(wechat_html)
+            if not external_imgs:
+                console.print("  [green]✓[/green] 无外链图片，所有图片已上传素材库")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] 发现 {len(external_imgs)} 张外链图片尚未上传到素材库:")
+                for url in external_imgs:
+                    short_url = url[:60] + "..." if len(url) > 60 else url
+                    console.print(f"    - {short_url}")
+
+                if wechat_cfg and ((wechat_cfg.api_key and wechat_cfg.api_secret) or wechat_cfg.access_token):
+                    console.print("  [green]✓[/green] 微信凭证已配置，发布时会自动上传这些图片")
+                else:
+                    console.print("  [red]✗[/red] 微信凭证缺失，图片上传将失败")
+                    console.print("    建议: 设置 WECHAT_API_KEY 和 WECHAT_API_SECRET 环境变量")
+        else:
+            if wechat_cfg:
+                console.print("  [yellow]⚠[/yellow] 未找到微信 HTML 文件，无法检查图片状态")
+            else:
+                console.print("  - (无需检查，微信未配置或无 HTML 文件)")
+
+        console.print("\n[bold cyan]6. 发布就绪总结[/bold cyan]")
+        for p in get_supported_platforms():
+            cfg = _resolve_platform_config(p, configs)
+            ext = ".html" if p == "wechat" else ".md"
+            dist_file_exists = False
+            if file_stem:
+                dist_file_exists = (dist_path / f"{file_stem}.{p}{ext}").exists()
+
+            issues = []
+            if not cfg:
+                issues.append("凭证缺失")
+            elif p == "wechat" and not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
+                issues.append("凭证不完整")
+            if not dist_file_exists:
+                issues.append("dist 文件缺失")
+
+            if p == "wechat" and wechat_html and find_external_images_in_html(wechat_html):
+                if not cfg or not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
+                    issues.append("外链图片无法上传")
+
+            if not issues:
+                console.print(f"  [green]✓ {p}[/green]: 可发布")
+            elif "凭证缺失" in issues or "凭证不完整" in issues:
+                console.print(f"  [red]✗ {p}[/red]: 将失败 - {'; '.join(issues)}")
+                console.print(f"    → 设置 {p.upper()}_ACCESS_TOKEN 环境变量或执行 publish platforms add")
+            elif "dist 文件缺失" in issues:
+                console.print(f"  [yellow]⚠ {p}[/yellow]: 将跳过 - {'; '.join(issues)}")
+                console.print(f"    → 先执行 publish convert --target {p}")
+            else:
+                console.print(f"  [yellow]⚠ {p}[/yellow]: {'; '.join(issues)}")
+                console.print(f"    → 检查微信凭证后重试，或使用 --dry-run 预览")
 
     console.print()
 
