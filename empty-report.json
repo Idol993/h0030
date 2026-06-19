@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-06-19T13:31:43.967179",
+  "article": "example",
+  "mode": "publish",
+  "source": "example.md",
+  "summary": {
+    "total": 2,
+    "publishable": 0,
+    "need_manual": 0,
+    "skipped": 0,
+    "failed": 2,
+    "publishable_platforms": [],
+    "need_manual_platforms": [],
+    "skipped_platforms": [],
+    "failed_platforms": [
+      "zhihu",
+      "juejin"
+    ]
+  },
+  "platforms": [
+    {
+      "platform": "zhihu",
+      "title": "",
+      "title_length": 0,
+      "summary": "",
+      "summary_length": 0,
+      "tags": [],
+      "tag_count": 0,
+      "tag_added": [],
+      "tag_removed": [],
+      "external_images": [],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "",
+      "source": "N/A (配置缺失)",
+      "dist_file": "",
+      "diffs": [],
+      "will_publish": false,
+      "will_fail": true,
+      "error": "平台 'zhihu' 未配置凭证。\n请设置 ZHIHU_ACCESS_TOKEN (或 ZHIHU_API_KEY + ZHIHU_API_SECRET) \n环境变量，或使用 'publish platforms add' 添加配置。"
+    },
+    {
+      "platform": "juejin",
+      "title": "",
+      "title_length": 0,
+      "summary": "",
+      "summary_length": 0,
+      "tags": [],
+      "tag_count": 0,
+      "tag_added": [],
+      "tag_removed": [],
+      "external_images": [],
+      "draft": false,
+      "content_type": "markdown",
+      "content_preview": "",
+      "source": "N/A (配置缺失)",
+      "dist_file": "",
+      "diffs": [],
+      "will_publish": false,
+      "will_fail": true,
+      "error": "平台 'juejin' 未配置凭证。\n请设置 JUEJIN_ACCESS_TOKEN (或 JUEJIN_API_KEY + JUEJIN_API_SECRET) \n环境变量，或使用 'publish platforms add' 添加配置。"
+    }
+  ]
+}

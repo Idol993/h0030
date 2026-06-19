@@ -130,6 +130,7 @@ def _do_publish(
     file: Optional[str],
     dist_dir: str,
     report: Optional[str] = None,
+    report_format: str = "both",
 ) -> None:
     configs = load_config()
 
@@ -188,10 +189,19 @@ def _do_publish(
     report_sections = []
     report_infos = []
     original_metadata = ArticleMetadata()
+    all_metadata = {}
 
     if md_text:
         base_converter = get_converter("zhihu")
         _, original_metadata = base_converter.convert(md_text, ArticleMetadata())
+    else:
+        for p in target_platforms:
+            dist_result = _read_dist_file(Path(dist_dir), file_stem, p)
+            if dist_result:
+                _, meta = dist_result
+                all_metadata[p] = meta
+        if "zhihu" in all_metadata:
+            original_metadata = all_metadata["zhihu"]
 
     for platform in target_platforms:
         config = _resolve_platform_config(platform, configs)
@@ -209,7 +219,7 @@ def _do_publish(
                 "error": error_msg,
             }
             results.append(result)
-            if dry_run and report:
+            if report:
                 info = {
                     "platform": platform,
                     "title": "",
@@ -222,6 +232,7 @@ def _do_publish(
                     "dist_file": "",
                     "diffs": [],
                     "will_publish": False,
+                    "will_fail": True,
                     "error": error_msg,
                 }
                 report_infos.append(info)
@@ -273,7 +284,7 @@ def _do_publish(
                     "error": str(e),
                 }
                 results.append(result)
-                if dry_run and report:
+                if report:
                     info = {
                         "platform": platform,
                         "title": "",
@@ -286,9 +297,11 @@ def _do_publish(
                         "dist_file": dist_file_path,
                         "diffs": diffs,
                         "will_publish": False,
+                        "will_fail": True,
                         "error": str(e),
                     }
                     report_infos.append(info)
+                    report_sections.append(_build_report_section(info, source))
                 continue
         else:
             ext = ".html" if platform == "wechat" else ".md"
@@ -305,7 +318,7 @@ def _do_publish(
                     "error": error_msg,
                 }
                 results.append(result)
-                if dry_run and report:
+                if report:
                     info = {
                         "platform": platform,
                         "title": "",
@@ -318,6 +331,7 @@ def _do_publish(
                         "dist_file": expected_file,
                         "diffs": diffs,
                         "will_publish": False,
+                        "will_fail": False,
                         "error": error_msg,
                     }
                     report_infos.append(info)
@@ -327,15 +341,23 @@ def _do_publish(
             ext = ".html" if platform == "wechat" else ".md"
             dist_file_path = f"{file_stem}.{platform}{ext}"
 
-            if platform == "juejin" and len(metadata.tags) >= 3:
-                default_tags = ["前端", "后端", "程序员"]
-                added_tags = [t for t in default_tags if t in metadata.tags and t not in original_metadata.tags]
-                if added_tags and original_metadata.tags:
-                    diffs.append(f"包含自动补足的标签: {', '.join(added_tags)}")
+            if platform == "juejin":
+                if original_metadata and original_metadata.tags:
+                    added_tags = [t for t in metadata.tags if t not in original_metadata.tags]
+                    removed_tags = [t for t in original_metadata.tags if t not in metadata.tags]
+                    if added_tags:
+                        diffs.append(f"包含自动补足的标签: {', '.join(added_tags)}")
+                elif len(metadata.tags) >= 3:
+                    default_tags = ["前端", "后端", "程序员", "人工智能", "算法", "数据结构"]
+                    added_tags = [t for t in default_tags if t in metadata.tags]
+                    if added_tags:
+                        diffs.append(f"包含自动补足的标签: {', '.join(added_tags)}")
             if platform == "wechat":
                 external_imgs = find_external_images_in_html(content)
                 if external_imgs:
                     diffs.append(f"还有 {len(external_imgs)} 张外链图片未上传素材库")
+            if original_metadata and original_metadata.title and metadata.title != original_metadata.title:
+                diffs.append(f"标题被截断 ({len(original_metadata.title)} → {len(metadata.title)} 字)")
 
             if platform == "wechat" and not dry_run:
                 external_imgs = find_external_images_in_html(content)
@@ -384,6 +406,7 @@ def _do_publish(
             info["source"] = source
             info["diffs"] = diffs
             info["will_publish"] = True
+            info["will_fail"] = False
             info["error"] = None
             _print_dry_run_preview(info)
             result = publisher.publish(content, metadata, draft=draft)
@@ -419,11 +442,20 @@ def _do_publish(
     console.print()
     console.print(f"[bold]发布结果:[/bold] 成功 [green]{success_count}[/green] 个，失败 [red]{fail_count}[/red] 个")
 
-    if report and report_sections:
-        _write_report(report, file_stem, report_sections, draft, dist_dir, report_infos, source if md_text else None)
-        console.print(f"\n[bold green]报告已保存: {report}[/bold green]")
-        json_path = Path(report).with_suffix(".json")
-        console.print(f"[bold green]JSON 报告已保存: {json_path}[/bold green]")
+    if report and report_infos:
+        _write_report(report, file_stem, report_sections, draft, dist_dir, report_infos, 
+                     file if md_text else None, report_format, 
+                     original_metadata if original_metadata.title else None)
+        if report_format in ("md", "both"):
+            console.print(f"\n[bold green]报告已保存: {report}[/bold green]")
+        if report_format in ("json", "both"):
+            json_path = Path(report).with_suffix(".json")
+            console.print(f"[bold green]JSON 报告已保存: {json_path}[/bold green]")
+
+    if dry_run and report_infos:
+        has_failed = any(info.get("will_fail") for info in report_infos)
+        if has_failed:
+            sys.exit(1)
 
     if fail_count > 0 and success_count == 0:
         sys.exit(1)
@@ -437,31 +469,100 @@ def _write_report(
     dist_dir: str,
     infos: List[dict],
     source_file: Optional[str] = None,
+    report_format: str = "both",
+    original_metadata: Optional[ArticleMetadata] = None,
 ) -> None:
-    lines = []
-    lines.append(f"# 发布预览报告 - {file_stem}")
-    lines.append("")
-    lines.append(f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"- **模式**: {'草稿' if draft else '正式发布'}")
-    if source_file:
-        lines.append(f"- **原文文件**: `{source_file}`")
-    else:
-        lines.append(f"- **dist 目录**: `{dist_dir}`")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
+    publishable = []
+    skipped = []
+    failed = []
+    need_manual = []
 
-    has_diffs = any(info.get("diffs") for info in infos)
-    if has_diffs:
-        lines.append("## 平台差异汇总")
+    for info in infos:
+        if info.get("will_fail"):
+            failed.append(info)
+        elif info.get("will_publish"):
+            if info.get("diffs"):
+                need_manual.append(info)
+            publishable.append(info)
+        else:
+            skipped.append(info)
+
+    if report_format in ("md", "both"):
+        lines = []
+        lines.append(f"# 发布预览报告 - {file_stem}")
         lines.append("")
-        lines.append("| 平台 | 标题 | 标签数 | 状态 | 差异说明 |")
-        lines.append("|------|------|--------|------|----------|")
+        lines.append(f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"- **模式**: {'草稿' if draft else '正式发布'}")
+        if source_file:
+            lines.append(f"- **原文文件**: `{source_file}`")
+        else:
+            lines.append(f"- **dist 目录**: `{dist_dir}`")
+        lines.append("")
+
+        lines.append("## 结果汇总")
+        lines.append("")
+        lines.append(f"- ✅ **可发布**: {len(publishable)} 个")
+        lines.append(f"- ⚠️ **需人工确认**: {len(need_manual)} 个")
+        lines.append(f"- ⏭️ **会跳过**: {len(skipped)} 个")
+        lines.append(f"- ❌ **会失败**: {len(failed)} 个")
+        lines.append("")
+
+        if need_manual:
+            lines.append("### 需要人工确认")
+            lines.append("")
+            for info in need_manual:
+                diffs = "; ".join(info.get("diffs", []))
+                lines.append(f"- **{info['platform'].upper()}**: {diffs}")
+            lines.append("")
+
+        if failed:
+            lines.append("### 会失败的平台")
+            lines.append("")
+            for info in failed:
+                lines.append(f"- **{info['platform'].upper()}**: {info.get('error', '')}")
+            lines.append("")
+
+        if skipped:
+            lines.append("### 会跳过的平台")
+            lines.append("")
+            for info in skipped:
+                lines.append(f"- **{info['platform'].upper()}**: {info.get('error', '')}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+        lines.append("## 跨平台对照总表")
+        lines.append("")
+        lines.append("| 平台 | 标题 | 标题长度 | 摘要长度 | 标签数 | 标签变化 | 图片状态 | 状态 |")
+        lines.append("|------|------|----------|----------|--------|----------|----------|------|")
         for info in infos:
             title = info.get("title", "") or "(无)"
+            title_len = len(title) if title else 0
+            summary_len = len(info.get("summary", ""))
             tag_count = len(info.get("tags", []))
+
+            tag_change = "-"
+            if original_metadata and original_metadata.tags and info.get("tags"):
+                added = [t for t in info["tags"] if t not in original_metadata.tags]
+                removed = [t for t in original_metadata.tags if t not in info["tags"]]
+                changes = []
+                if added:
+                    changes.append(f"+{', '.join(added)}")
+                if removed:
+                    changes.append(f"-{', '.join(removed)}")
+                if changes:
+                    tag_change = ", ".join(changes)
+
+            img_status = "-"
+            if info["platform"] == "wechat":
+                for d in info.get("diffs", []):
+                    if "外链图片" in d:
+                        img_status = d
+                        break
+
             status = []
-            if info.get("error"):
+            if info.get("will_fail"):
                 status.append("❌ 失败")
             elif info.get("will_publish"):
                 status.append("✅ 可发布")
@@ -469,40 +570,77 @@ def _write_report(
                 status.append("⚠️ 跳过")
             if info.get("draft"):
                 status.append("草稿")
-            diffs = "; ".join(info.get("diffs", [])) if info.get("diffs") else "-"
-            lines.append(f"| {info['platform'].upper()} | {title} | {tag_count} | {' '.join(status)} | {diffs} |")
+
+            lines.append(f"| {info['platform'].upper()} | {title} | {title_len} | {summary_len} | {tag_count} | {tag_change} | {img_status} | {' '.join(status)} |")
         lines.append("")
         lines.append("---")
         lines.append("")
 
-    lines.extend(sections)
+        lines.extend(sections)
 
-    Path(report_path).write_text("\n".join(lines), encoding="utf-8")
+        Path(report_path).write_text("\n".join(lines), encoding="utf-8")
 
-    json_path = Path(report_path).with_suffix(".json")
-    json_data = {
-        "generated_at": datetime.now().isoformat(),
-        "article": file_stem,
-        "mode": "draft" if draft else "publish",
-        "source": source_file if source_file else dist_dir,
-        "platforms": [],
-    }
-    for info in infos:
-        json_data["platforms"].append({
-            "platform": info["platform"],
-            "title": info.get("title", ""),
-            "summary": info.get("summary", ""),
-            "tags": info.get("tags", []),
-            "draft": info.get("draft", False),
-            "content_type": info.get("content_type", ""),
-            "content_preview": info.get("content_preview", ""),
-            "source": info.get("source", ""),
-            "dist_file": info.get("dist_file", ""),
-            "diffs": info.get("diffs", []),
-            "will_publish": info.get("will_publish", False),
-            "error": info.get("error"),
-        })
-    json_path.write_text(json.dumps(json_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    if report_format in ("json", "both"):
+        json_path = Path(report_path).with_suffix(".json")
+        json_data = {
+            "generated_at": datetime.now().isoformat(),
+            "article": file_stem,
+            "mode": "draft" if draft else "publish",
+            "source": source_file if source_file else dist_dir,
+            "summary": {
+                "total": len(infos),
+                "publishable": len(publishable),
+                "need_manual": len(need_manual),
+                "skipped": len(skipped),
+                "failed": len(failed),
+                "publishable_platforms": [p["platform"] for p in publishable],
+                "need_manual_platforms": [p["platform"] for p in need_manual],
+                "skipped_platforms": [p["platform"] for p in skipped],
+                "failed_platforms": [p["platform"] for p in failed],
+            },
+            "platforms": [],
+        }
+        for info in infos:
+            title = info.get("title", "")
+            title_len = len(title) if title else 0
+            summary_len = len(info.get("summary", ""))
+            tag_count = len(info.get("tags", []))
+
+            tag_added = []
+            tag_removed = []
+            if original_metadata and original_metadata.tags and info.get("tags"):
+                tag_added = [t for t in info["tags"] if t not in original_metadata.tags]
+                tag_removed = [t for t in original_metadata.tags if t not in info["tags"]]
+
+            external_images = []
+            if info["platform"] == "wechat":
+                for d in info.get("diffs", []):
+                    if "外链图片" in d:
+                        external_images = d
+                        break
+
+            json_data["platforms"].append({
+                "platform": info["platform"],
+                "title": info.get("title", ""),
+                "title_length": title_len,
+                "summary": info.get("summary", ""),
+                "summary_length": summary_len,
+                "tags": info.get("tags", []),
+                "tag_count": tag_count,
+                "tag_added": tag_added,
+                "tag_removed": tag_removed,
+                "external_images": external_images,
+                "draft": info.get("draft", False),
+                "content_type": info.get("content_type", ""),
+                "content_preview": info.get("content_preview", ""),
+                "source": info.get("source", ""),
+                "dist_file": info.get("dist_file", ""),
+                "diffs": info.get("diffs", []),
+                "will_publish": info.get("will_publish", False),
+                "will_fail": info.get("will_fail", False),
+                "error": info.get("error"),
+            })
+        json_path.write_text(json.dumps(json_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _do_doctor(env_file: Optional[str], dist_dir: str, file: Optional[str]) -> None:
@@ -776,6 +914,7 @@ _publish_options = [
     click.option("--file", "-f", type=click.Path(exists=True), help="Markdown原文文件路径"),
     click.option("--dist-dir", default="./dist", help="dist目录路径，默认 ./dist"),
     click.option("--report", default=None, help="dry-run 报告输出文件路径 (如 publish-report.md)"),
+    click.option("--report-format", default="both", type=click.Choice(["md", "json", "both"]), help="报告输出格式 (md/json/both)，默认 both"),
 ]
 
 
@@ -813,6 +952,7 @@ class AppGroup(click.Group):
                 file=ctx.params.get("file"),
                 dist_dir=ctx.params.get("dist_dir"),
                 report=ctx.params.get("report"),
+                report_format=ctx.params.get("report_format", "both"),
             )
 
         if not args and not any([has_platforms, has_all, has_file, has_draft, has_dry_run]):
@@ -831,6 +971,7 @@ class AppGroup(click.Group):
 @click.option("--file", "-f", type=click.Path(exists=True), help="Markdown原文文件路径")
 @click.option("--dist-dir", default="./dist", help="dist目录路径，默认 ./dist")
 @click.option("--report", default=None, help="dry-run 报告输出文件路径 (如 publish-report.md)")
+@click.option("--report-format", default="both", type=click.Choice(["md", "json", "both"]), help="报告输出格式 (md/json/both)，默认 both")
 @click.version_option(version="0.1.0", prog_name="publish")
 @click.pass_context
 def app(
@@ -843,6 +984,7 @@ def app(
     file: Optional[str],
     dist_dir: str,
     report: Optional[str],
+    report_format: str,
 ) -> None:
     if ctx.invoked_subcommand is not None:
         if env:
@@ -929,8 +1071,9 @@ def publish_cmd(
     file: Optional[str],
     dist_dir: str,
     report: Optional[str],
+    report_format: str,
 ) -> None:
-    _do_publish(platforms, all_platforms, draft, dry_run, file, dist_dir, report)
+    _do_publish(platforms, all_platforms, draft, dry_run, file, dist_dir, report, report_format)
 
 
 @app.command("doctor")
