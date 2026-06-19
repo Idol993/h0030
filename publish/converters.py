@@ -240,3 +240,36 @@ def get_converter(platform: str, **kwargs) -> BaseConverter:
 
 def get_supported_platforms() -> List[str]:
     return list(_converter_registry.keys())
+
+
+def find_external_images_in_html(html_content: str) -> List[str]:
+    soup = BeautifulSoup(html_content, "html.parser")
+    urls = []
+    for img in soup.find_all("img"):
+        data_src = img.get("data-src", "")
+        src = img.get("src", "")
+        url = data_src or src
+        if url and not url.startswith("data:") and (url.startswith("http://") or url.startswith("https://")):
+            urls.append(url)
+    return urls
+
+
+def replace_external_images_in_html(html_content: str, upload_func) -> Tuple[str, List[str]]:
+    soup = BeautifulSoup(html_content, "html.parser")
+    failed = []
+    for img in soup.find_all("img"):
+        data_src = img.get("data-src", "")
+        src = img.get("src", "")
+        url = data_src or src
+        if not url or url.startswith("data:"):
+            continue
+        if not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        try:
+            media_id = upload_func(url)
+            img["data-src"] = media_id
+            if "src" in img.attrs:
+                del img["src"]
+        except Exception:
+            failed.append(url)
+    return str(soup), failed

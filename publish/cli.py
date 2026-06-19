@@ -3,6 +3,7 @@ import sys
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
+from datetime import datetime
 
 import click
 from dotenv import load_dotenv
@@ -12,23 +13,12 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
 
-from .converters import get_converter, get_supported_platforms
+from .converters import get_converter, get_supported_platforms, find_external_images_in_html, replace_external_images_in_html
 from .publishers import get_publisher, get_platform_config_from_env
 from .config import load_config, add_platform, remove_platform, list_platforms, get_platform
 from .models import ArticleMetadata, PlatformConfig
 
 console = Console()
-
-
-def _parse_metadata_file(md_path: Path) -> ArticleMetadata:
-    metadata = ArticleMetadata()
-    return metadata
-
-
-def _ensure_dist_dir() -> Path:
-    dist_dir = Path.cwd() / "dist"
-    dist_dir.mkdir(exist_ok=True)
-    return dist_dir
 
 
 def _read_markdown(file_path: str) -> str:
@@ -39,9 +29,10 @@ def _read_markdown(file_path: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _get_platform_config(platform: str, configs: Dict[str, PlatformConfig]) -> Optional[PlatformConfig]:
-    if platform in configs:
-        return configs[platform]
+def _resolve_platform_config(platform: str, configs: Dict[str, PlatformConfig]) -> Optional[PlatformConfig]:
+    for name, cfg in configs.items():
+        if name == platform or cfg.type == platform:
+            return cfg
     env_config = get_platform_config_from_env(platform)
     if env_config:
         return env_config
@@ -102,6 +93,31 @@ def _print_dry_run_preview(info: dict) -> None:
     console.print()
 
 
+def _build_report_section(info: dict, dist_file: str) -> str:
+    lines = []
+    lines.append(f"## {info['platform'].upper()}")
+    lines.append("")
+    lines.append(f"- **标题**: {info['title'] or '(无标题)'}")
+    lines.append(f"- **摘要**: {info['summary'] or '(无摘要)'}")
+    lines.append(f"- **标签**: {', '.join(info['tags']) if info['tags'] else '(无)'}")
+    lines.append(f"- **状态**: {'草稿' if info['draft'] else '正式发布'}")
+    lines.append(f"- **格式**: {info['content_type'].upper()}")
+    lines.append(f"- **dist 文件**: `{dist_file}`")
+    lines.append("")
+    lines.append("### 正文预览")
+    lines.append("")
+    if info["content_type"] == "markdown":
+        lines.append(info["content_preview"])
+    else:
+        lines.append("```html")
+        lines.append(info["content_preview"][:500])
+        lines.append("```")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _do_publish(
     platforms: Optional[str],
     all_platforms: bool,
@@ -109,13 +125,14 @@ def _do_publish(
     dry_run: bool,
     file: Optional[str],
     dist_dir: str,
+    report: Optional[str] = None,
 ) -> None:
     configs = load_config()
 
     if all_platforms:
         target_platforms = []
         for p in get_supported_platforms():
-            if _get_platform_config(p, configs):
+            if _resolve_platform_config(p, configs):
                 target_platforms.append(p)
         if not target_platforms:
             target_platforms = list(configs.keys())
@@ -164,9 +181,10 @@ def _do_publish(
     console.print(f"文章标识: {file_stem}\n")
 
     results = []
+    report_sections = []
 
     for platform in target_platforms:
-        config = _get_platform_config(platform, configs)
+        config = _resolve_platform_config(platform, configs)
         if not config:
             error_msg = (
                 f"平台 '{platform}' 未配置凭证。\n"
@@ -184,6 +202,7 @@ def _do_publish(
 
         content = None
         metadata = ArticleMetadata()
+        dist_file_path = ""
 
         if md_text:
             try:
@@ -200,6 +219,9 @@ def _do_publish(
                 converter = get_converter(platform, **converter_kwargs)
                 content, meta = converter.convert(md_text, metadata)
                 metadata = meta
+
+                ext = ".html" if platform == "wechat" else ".md"
+                dist_file_path = f"{file_stem}.{platform}{ext}"
             except Exception as e:
                 console.print(f"[red]✗[/red] [{platform}] 转换失败: {e}")
                 results.append({
@@ -222,12 +244,56 @@ def _do_publish(
                 })
                 continue
             content, metadata = dist_result
+            ext = ".html" if platform == "wechat" else ".md"
+            dist_file_path = f"{file_stem}.{platform}{ext}"
+
+            if platform == "wechat" and not dry_run:
+                external_imgs = find_external_images_in_html(content)
+                if external_imgs:
+                    console.print(f"    [yellow]↑[/yellow] [{platform}] 发现 {len(external_imgs)} 张外链图片，尝试上传到微信素材库...")
+                    try:
+                        publisher = get_publisher(platform, config, dry_run=False)
+                        content, failed_uploads = replace_external_images_in_html(content, publisher.upload_image)
+                        if failed_uploads:
+                            raise RuntimeError(
+                                f"微信图片上传失败 ({len(failed_uploads)} 张): {', '.join(failed_uploads[:3])}...\n"
+                                "请检查 WECHAT_API_KEY 和 WECHAT_API_SECRET 是否正确，"
+                                "或使用 --dry-run 跳过图片上传。"
+                            )
+                        console.print(f"    [green]✓[/green] [{platform}] {len(external_imgs)} 张图片已上传到素材库")
+                        dist_content_file = Path(dist_dir) / f"{file_stem}.{platform}.html"
+                        dist_content_file.write_text(content, encoding="utf-8")
+                    except RuntimeError as e:
+                        console.print(f"[red]✗[/red] [{platform}] 图片上传失败: {e}")
+                        results.append({
+                            "success": False,
+                            "platform": platform,
+                            "error": str(e),
+                        })
+                        continue
+                    except Exception as e:
+                        error_msg = (
+                            f"微信图片上传失败: {e}\n"
+                            "请检查 WECHAT_API_KEY 和 WECHAT_API_SECRET 是否正确，"
+                            "或使用 --dry-run 跳过图片上传。"
+                        )
+                        console.print(f"[red]✗[/red] [{platform}] {error_msg}")
+                        results.append({
+                            "success": False,
+                            "platform": platform,
+                            "error": error_msg,
+                        })
+                        continue
 
         if dry_run:
             publisher = get_publisher(platform, config, dry_run=True)
             info = publisher.get_dry_run_info(content, metadata, draft)
+            info["dist_file"] = dist_file_path
             _print_dry_run_preview(info)
             result = publisher.publish(content, metadata, draft=draft)
+
+            if report:
+                report_sections.append(_build_report_section(info, dist_file_path))
         else:
             try:
                 publisher = get_publisher(platform, config, dry_run=False)
@@ -255,8 +321,190 @@ def _do_publish(
     console.print()
     console.print(f"[bold]发布结果:[/bold] 成功 [green]{success_count}[/green] 个，失败 [red]{fail_count}[/red] 个")
 
+    if report and report_sections:
+        _write_report(report, file_stem, report_sections, draft, dist_dir)
+        console.print(f"\n[bold green]报告已保存: {report}[/bold green]")
+
     if fail_count > 0 and success_count == 0:
         sys.exit(1)
+
+
+def _write_report(report_path: str, file_stem: str, sections: List[str], draft: bool, dist_dir: str) -> None:
+    lines = []
+    lines.append(f"# 发布预览报告 - {file_stem}")
+    lines.append("")
+    lines.append(f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"- **模式**: {'草稿' if draft else '正式发布'}")
+    lines.append(f"- **dist 目录**: `{dist_dir}`")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.extend(sections)
+
+    Path(report_path).write_text("\n".join(lines), encoding="utf-8")
+
+
+def _do_doctor(env_file: Optional[str], dist_dir: str, file: Optional[str]) -> None:
+    if env_file:
+        load_dotenv(env_file)
+    else:
+        load_dotenv()
+
+    configs = load_config()
+
+    console.print(Panel("[bold]Publish Doctor - 发布前检查[/bold]", border_style="green"))
+
+    console.print("\n[bold cyan]1. 环境变量文件[/bold cyan]")
+    env_path = Path(env_file) if env_file else Path.cwd() / ".env"
+    if env_path.exists():
+        console.print(f"  [green]✓[/green] 找到环境变量文件: {env_path}")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] 未找到环境变量文件: {env_path}")
+        console.print("    建议: 创建 .env 文件或使用 --env 指定路径")
+
+    console.print("\n[bold cyan]2. 平台凭证配置[/bold cyan]")
+    platform_table = Table(show_header=True)
+    platform_table.add_column("平台", style="cyan")
+    platform_table.add_column("配置来源", style="yellow")
+    platform_table.add_column("凭证状态", style="magenta")
+    platform_table.add_column("说明", style="white")
+
+    for p in get_supported_platforms():
+        cfg = _resolve_platform_config(p, configs)
+        if cfg:
+            source = "配置文件" if p in configs else "环境变量"
+            if p == "wechat":
+                has_cred = "✓" if (cfg.api_key and cfg.api_secret) or cfg.access_token else "✗"
+                note = "需要 API_KEY + API_SECRET" if has_cred == "✗" else "凭证完整"
+            else:
+                has_cred = "✓" if cfg.access_token else "✗"
+                note = f"需要 {p.upper()}_ACCESS_TOKEN" if has_cred == "✗" else "凭证完整"
+            platform_table.add_row(p, source, has_cred, note)
+        else:
+            platform_table.add_row(p, "-", "✗", f"设置 {p.upper()}_ACCESS_TOKEN 或 platforms add")
+
+    console.print(platform_table)
+
+    console.print("\n[bold cyan]3. dist 目录文件[/bold cyan]")
+    dist_path = Path(dist_dir)
+    file_stem = None
+    if not dist_path.exists():
+        console.print(f"  [red]✗[/red] dist 目录不存在: {dist_dir}")
+        console.print("    建议: 先执行 'publish convert article.md --all'")
+    else:
+        json_files = list(dist_path.glob("*.json"))
+        if json_files:
+            file_stem = json_files[0].stem.split(".")[0]
+        else:
+            md_files = list(dist_path.glob("*.md"))
+            file_stem = md_files[0].stem if md_files else None
+
+        if file_stem:
+            console.print(f"  文章标识: [bold]{file_stem}[/bold]")
+            dist_table = Table(show_header=True)
+            dist_table.add_column("平台", style="cyan")
+            dist_table.add_column("文件", style="green")
+            dist_table.add_column("状态", style="magenta")
+
+            for p in get_supported_platforms():
+                ext = ".html" if p == "wechat" else ".md"
+                content_file = dist_path / f"{file_stem}.{p}{ext}"
+                meta_file = dist_path / f"{file_stem}.{p}.json"
+
+                if content_file.exists():
+                    size = content_file.stat().st_size
+                    status = f"✓ ({size} bytes)"
+                    if not meta_file.exists():
+                        status += " (元信息缺失)"
+                else:
+                    status = "✗ 缺失"
+                dist_table.add_row(p, content_file.name, status)
+
+            console.print(dist_table)
+
+            console.print("\n[bold cyan]4. 文章元信息[/bold cyan]")
+            for p in get_supported_platforms():
+                meta_file = dist_path / f"{file_stem}.{p}.json"
+                if meta_file.exists():
+                    try:
+                        meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                        meta = ArticleMetadata(**meta_data)
+                        console.print(f"  [{p}] 标题: {meta.title or '(无)'}")
+                        if meta.tags:
+                            console.print(f"         标签: {', '.join(meta.tags)}")
+                        if meta.summary:
+                            s = meta.summary[:60] + "..." if len(meta.summary) > 60 else meta.summary
+                            console.print(f"         摘要: {s}")
+                        if p == "juejin" and len(meta.tags) < 3:
+                            console.print(f"         [yellow]⚠ 标签不足3个，发布时会自动补充[/yellow]")
+                    except Exception as e:
+                        console.print(f"  [{p}] [red]元信息解析失败: {e}[/red]")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] dist 目录为空，没有找到已转换的文件")
+            console.print("    建议: 先执行 'publish convert article.md --all'")
+
+    console.print("\n[bold cyan]5. 微信图片素材状态[/bold cyan]")
+    wechat_cfg = _resolve_platform_config("wechat", configs)
+    wechat_html = None
+    if file_stem and dist_path.exists():
+        wechat_file = dist_path / f"{file_stem}.wechat.html"
+        if wechat_file.exists():
+            wechat_html = wechat_file.read_text(encoding="utf-8")
+
+    if wechat_html:
+        external_imgs = find_external_images_in_html(wechat_html)
+        if not external_imgs:
+            console.print("  [green]✓[/green] 无外链图片，所有图片已上传素材库")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] 发现 {len(external_imgs)} 张外链图片尚未上传到素材库:")
+            for url in external_imgs:
+                short_url = url[:60] + "..." if len(url) > 60 else url
+                console.print(f"    - {short_url}")
+
+            if wechat_cfg and ((wechat_cfg.api_key and wechat_cfg.api_secret) or wechat_cfg.access_token):
+                console.print("  [green]✓[/green] 微信凭证已配置，发布时会自动上传这些图片")
+            else:
+                console.print("  [red]✗[/red] 微信凭证缺失，图片上传将失败")
+                console.print("    建议: 设置 WECHAT_API_KEY 和 WECHAT_API_SECRET 环境变量")
+    else:
+        if wechat_cfg:
+            console.print("  [yellow]⚠[/yellow] 未找到微信 HTML 文件，无法检查图片状态")
+        else:
+            console.print("  - (无需检查，微信未配置或无 HTML 文件)")
+
+    console.print("\n[bold cyan]6. 发布就绪总结[/bold cyan]")
+    for p in get_supported_platforms():
+        cfg = _resolve_platform_config(p, configs)
+        ext = ".html" if p == "wechat" else ".md"
+        dist_file_exists = False
+        if file_stem:
+            dist_file_exists = (dist_path / f"{file_stem}.{p}{ext}").exists()
+
+        issues = []
+        if not cfg:
+            issues.append("凭证缺失")
+        elif p == "wechat" and not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
+            issues.append("凭证不完整")
+        if not dist_file_exists:
+            issues.append("dist 文件缺失")
+
+        if p == "wechat" and wechat_html and find_external_images_in_html(wechat_html):
+            if not cfg or not ((cfg.api_key and cfg.api_secret) or cfg.access_token):
+                issues.append("外链图片无法上传")
+
+        if not issues:
+            console.print(f"  [green]✓ {p}[/green]: 可发布")
+        elif "凭证缺失" in issues or "凭证不完整" in issues:
+            console.print(f"  [red]✗ {p}[/red]: 将失败 - {'; '.join(issues)}")
+            console.print(f"    → 设置 {p.upper()}_ACCESS_TOKEN 环境变量或执行 publish platforms add")
+        elif "dist 文件缺失" in issues:
+            console.print(f"  [yellow]⚠ {p}[/yellow]: 将跳过 - {'; '.join(issues)}")
+            console.print(f"    → 先执行 publish convert --target {p}")
+        else:
+            console.print(f"  [yellow]⚠ {p}[/yellow]: {'; '.join(issues)}")
+            console.print(f"    → 检查微信凭证后重试，或使用 --dry-run 预览")
+
+    console.print()
 
 
 _publish_options = [
@@ -266,6 +514,7 @@ _publish_options = [
     click.option("--dry-run", is_flag=True, help="试运行模式，只打印预览不实际调用API"),
     click.option("--file", "-f", type=click.Path(exists=True), help="Markdown原文文件路径"),
     click.option("--dist-dir", default="./dist", help="dist目录路径，默认 ./dist"),
+    click.option("--report", default=None, help="dry-run 报告输出文件路径 (如 publish-report.md)"),
 ]
 
 
@@ -286,8 +535,9 @@ class AppGroup(click.Group):
         has_draft = ctx.params.get("draft")
         has_dry_run = ctx.params.get("dry_run")
         has_all = ctx.params.get("all_platforms")
+        has_report = ctx.params.get("report") is not None
 
-        if has_platforms or has_all or has_file or has_draft or has_dry_run:
+        if has_platforms or has_all or has_file or has_draft or has_dry_run or has_report:
             env = ctx.params.get("env")
             if env:
                 load_dotenv(env)
@@ -301,6 +551,7 @@ class AppGroup(click.Group):
                 dry_run=ctx.params.get("dry_run"),
                 file=ctx.params.get("file"),
                 dist_dir=ctx.params.get("dist_dir"),
+                report=ctx.params.get("report"),
             )
 
         if not args and not any([has_platforms, has_all, has_file, has_draft, has_dry_run]):
@@ -318,6 +569,7 @@ class AppGroup(click.Group):
 @click.option("--dry-run", is_flag=True, help="试运行模式，只打印预览不实际调用API")
 @click.option("--file", "-f", type=click.Path(exists=True), help="Markdown原文文件路径")
 @click.option("--dist-dir", default="./dist", help="dist目录路径，默认 ./dist")
+@click.option("--report", default=None, help="dry-run 报告输出文件路径 (如 publish-report.md)")
 @click.version_option(version="0.1.0", prog_name="publish")
 @click.pass_context
 def app(
@@ -329,6 +581,7 @@ def app(
     dry_run: bool,
     file: Optional[str],
     dist_dir: str,
+    report: Optional[str],
 ) -> None:
     if ctx.invoked_subcommand is not None:
         if env:
@@ -337,7 +590,7 @@ def app(
             load_dotenv()
         return
 
-    if not any([platforms, all_platforms, file, draft, dry_run]):
+    if not any([platforms, all_platforms, file, draft, dry_run, report]):
         click.echo(ctx.get_help())
 
 
@@ -414,8 +667,17 @@ def publish_cmd(
     dry_run: bool,
     file: Optional[str],
     dist_dir: str,
+    report: Optional[str],
 ) -> None:
-    _do_publish(platforms, all_platforms, draft, dry_run, file, dist_dir)
+    _do_publish(platforms, all_platforms, draft, dry_run, file, dist_dir, report)
+
+
+@app.command("doctor")
+@click.option("--env", type=click.Path(exists=True), help="环境变量文件路径")
+@click.option("--dist-dir", default="./dist", help="dist目录路径，默认 ./dist")
+@click.option("--file", "-f", type=click.Path(exists=True), help="Markdown原文文件路径 (用于元信息检查)")
+def doctor_cmd(env: Optional[str], dist_dir: str, file: Optional[str]) -> None:
+    _do_doctor(env, dist_dir, file)
 
 
 @app.group("platforms")
@@ -506,7 +768,7 @@ def platforms_remove(name: str) -> None:
 @click.argument("name")
 def platforms_show(name: str) -> None:
     configs = load_config()
-    cfg = _get_platform_config(name, configs)
+    cfg = _resolve_platform_config(name, configs)
 
     if not cfg:
         console.print(f"[red]✗ 平台 '{name}' 不存在或未配置[/red]")
